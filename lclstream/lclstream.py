@@ -147,6 +147,10 @@ def get(config: Annotated[
             str,
             typer.Option(help="API server name (Certified URL format)."),
         ] = "https://sdfdtn003.slac.stanford.edu:4433",
+        ndial: Annotated[
+            int,
+            typer.Option(help="Number of parallel PULL connections."),
+        ] = 16
     ) -> None:
     """
     Request a data stream from LCLStreamer-API
@@ -169,33 +173,37 @@ def get(config: Annotated[
                         base_url = server,
                         headers = headers,
                     ) as cli:
-            resp = await cli.post("/v1/transfers", cfg)
-            ok = resp.status_code//100 == 2
+            resp = await cli.post("/v1/transfers", json=cfg)
             ans = await resp.json()
-        return ok, ans
+        return resp.status, ans
 
-    async def cancel_transfer(tid: int) -> None:
+    async def cancel_transfer(tid: str) -> None:
         async with cert.ClientSession(
                         base_url = server,
                         headers = headers,
                     ) as cli:
             await cli.delete(f"/v1/transfers/{tid}")
 
-    ok, ans = asyncio.run(request_data())
+    status, ans = asyncio.run(request_data())
 
     # parse response from server
-    print(ok, ans)
-    url : str = ans.get("url", "")
-    tid : int = ans.get("id", -1)
-    if not ok or url == "":
+    url: str = ans.get("url", "")
+    tid: str = ans.get("id", "")
+    if status//100 != 2:
+        print("Unable to download stream.\n"
+              f"{status}: {ans}", file=sys.stderr)
         sys.exit(1)
+    print("Received " + json.dumps(ans, indent=2), file=sys.stderr)
 
     def kill_transfer(sig, frame):
         nonlocal tid
-        if tid > 0:
+        if tid != "":
             asyncio.run(cancel_transfer(tid))
-        tid = -1
-        sys.exit(0) # Exit the program gracefully
+        sys.exit(1)
+
+    if url == "":
+        print("No URL in response.", file=sys.stderr)
+        kill_transfer()
 
     signal.signal(signal.SIGINT, kill_transfer)
     signal.signal(signal.SIGPIPE, kill_transfer)
@@ -203,7 +211,7 @@ def get(config: Annotated[
 
     # stream the response to stdout
     try:
-        pull(dial=url, ndial=1)
+        pull(dial=url, ndial=16)
     except Exception:
         kill_transfer(None, None)
         raise
