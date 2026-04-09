@@ -3,14 +3,14 @@ from io import BytesIO
 import signal
 import random
 from pathlib import Path
+import time
 
 import h5py  # type: ignore
-from pynng import Pull0, Push0  # type: ignore
 
 import pytest
 from typer.testing import CliRunner
 from lclstream.lclstream import app
-from lclstream.nng import puller
+from lclstream.zmqsock import puller, pusher
 
 from contextlib import contextmanager
 
@@ -26,9 +26,11 @@ def child_process(fn, *args, **kws):
        try:
            yield
        finally:
+           time.sleep(1)
            os.kill(child_pid, signal.SIGTERM)
     else: # child process
        fn( *args, **kws)
+       os._exit(0)
 
 def gen_data(dirname, n=100, m=1000):
     """ Generate n files with m bytes each.
@@ -59,22 +61,36 @@ def run_pull(output, **args):
         fname = output/f"{i:02d}.h5"
         with open(fname, "wb") as f:
             f.write( x )
+        print(f"wrote {len(x)} bytes to {fname}")
 
 def run_push(fnames, **args):
-    socket = Push0(**args)
-    for fname in fnames:
-        with open(fname, "rb") as f:
-            x = f.read()
-        socket.send(x)
+    def genz(fnames):
+        for fname in fnames:
+            with open(fname, "rb") as f:
+                yield f.read()
+    num = 0
+    for n in genz(fnames) >> pusher(**args):
+        num += 1
+    assert num == len(fnames)
 
-def test_the_test(tmpdir):
+def test_push(tmpdir):
     inp = tmpdir / "input"
     out = tmpdir / "output"
     fnames = gen_data(inp, 100, 1024)
 
     addr = "tcp://127.0.0.1:50201"
     with child_process(run_pull, out, addr=addr, ndial=0):
-        run_push(fnames, dial=addr)
+        run_push(fnames, addr=addr, ndial=1)
+    check_data(fnames, out)
+
+def test_pull(tmpdir):
+    inp = tmpdir / "input"
+    out = tmpdir / "output"
+    fnames = gen_data(inp, 100, 1024)
+
+    addr = "tcp://127.0.0.1:50301"
+    with child_process(run_push, fnames, addr=addr, ndial=0):
+        run_pull(out, addr=addr, ndial=1)
     check_data(fnames, out)
 
 runner = CliRunner()
@@ -86,7 +102,7 @@ def xtest_push(tmpdir):
     # Setup test data for send/recv.
 
     addr = "tcp://127.0.0.1:50202"
-    with child_process(run_pull, out, listen=addr):
+    with child_process(run_pull, out, addr=addr, ndial=0):
         result = runner.invoke(app, ["push", "-n", "1",
                                      "--addr", addr,
                                     ] + fnames)
@@ -101,7 +117,7 @@ def xtest_pull(tmpdir):
     out = tmpdir / "output"
     fnames = gen_data(inp, 100, 1024)
     addr = "tcp://127.0.0.1:50203"
-    with child_process(run_push, fnames, listen=addr):
+    with child_process(run_push, fnames, addr=addr, ndial=0):
         result = runner.invoke(app, ["pull", "--ndial", "1",
                                      "--dial", addr,
                                      "--names", "%02d.h5",

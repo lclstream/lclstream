@@ -14,7 +14,7 @@ import typer
 import yaml
 from certified import Certified
 
-from .nng import puller, pusher
+from .zmqsock import puller, pusher
 from .stream_utils import clock
 from .stream_tar import write_tar
 
@@ -48,7 +48,7 @@ def pull(listen: Annotated[
         ] = False,
     ) -> None:
     """
-    Pull data from an open nng stream, printing as
+    Pull data from an open zmq stream, printing as
     a tarfile format to stdout.
     """
 
@@ -87,7 +87,7 @@ def push(names: Annotated[
             typer.Option("--ndial", "-n", help="Dial-out to address if >0."),
         ] = 0,
     ) -> None:
-    """ Push a list of files to an nng stream.
+    """ Push a list of files to an zmq stream.
     Used to replay a data transmission.
     """
     
@@ -203,7 +203,7 @@ def get(config: Annotated[
 
     if url == "":
         print("No URL in response.", file=sys.stderr)
-        kill_transfer()
+        kill_transfer(None, None)
 
     signal.signal(signal.SIGINT, kill_transfer)
     signal.signal(signal.SIGPIPE, kill_transfer)

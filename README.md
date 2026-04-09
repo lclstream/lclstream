@@ -41,12 +41,12 @@ or
 
 # Development
 
-Install/test with poetry
+Install/test with uv
 
-    poetry install
-    poetry run mypy lclstream
-    poetry run pytest --cov lclstream tests
-    poetry run lclstream <...>
+    uv sybc
+    uv run --extra dev mypy lclstream
+    uv run --extra dev pytest --cov lclstream tests
+    uv run lclstream <...>
 
 
 # Certified

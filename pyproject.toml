@@ -1,34 +1,42 @@
-[tool.poetry]
+[project]
 name = "lclstream"
-version = "1.0.0"
+requires-python = ">=3.9,<4.0"
+version = "2.0.0"
 description = "Data streaming client for LCLS and LCLS-II"
-authors = ["Cong Wang <wangimagine@gmail.com>",
-           "David M. Rogers <predictivestatmech@gmail.com>",
-           "Valerio Mariani <valmar@slac.stanford.edu>"
-          ]
+authors = [
+    { name="David M. Rogers", email="predictivestatmech@gmail.com" },
+    { name="Cong Wang", email="wangimagine@gmail.com" },
+    { name="Valerio Mariani", email="valmar@slac.stanford.edu" },
+]
 license = "MIT"
 readme = "README.md"
 
-[tool.poetry.scripts]
+dependencies = [
+    #"pynng >=0.8.0"
+    "pyzmq >=14.4",
+    "numpy >=1.20",
+    "pydantic >=2.1",
+    "typer >=0.16.0",
+    "h5py >=3.11.0,<4.0",
+    "hdf5plugin >=4.4.0,<5.0",
+    "stream @ git+https://github.com/frobnitzem/stream.py",
+    "certified >=1.0.2,<2.0",
+    "pyyaml >=6.0.2,<7.0",
+]
+
+[project.urls]
+repository = "https://github.com/lclstream/lclstream"
+
+[project.scripts]
 lclstream = "lclstream.lclstream:app"
 
-[tool.poetry.dependencies]
-python = "^3.9"
-pynng = "^0.8.0"
-numpy = "^1.20"
-pydantic = ">=2.1"
-typer = ">=0.16.0"
-h5py = "^3.11.0"
-hdf5plugin = "^4.4.0"
-stream = {git = "https://github.com/frobnitzem/stream.py", rev = "v1.0.0"}
-certified = "^1.0.2"
-pyyaml = "^6.0.2"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.2.2"
-mypy = "^1.17.0"
-types-pyyaml = "^6.0.12.20250516"
+[project.optional-dependencies]
+dev = [
+    "pytest >=8.2.2,<9.0",
+    "mypy >=1.17.0,<2.0",
+    "types-pyyaml >=6.0.12.20250516,<7.0",
+]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
