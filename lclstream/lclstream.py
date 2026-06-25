@@ -8,6 +8,7 @@ import asyncio
 import json
 import sys
 import signal
+import logging
 
 import stream
 import typer
@@ -20,6 +21,7 @@ from .stream_tar import write_tar
 
 from lclstream import __version__
 
+logger = logging.getLogger(__name__)
 app = typer.Typer()
 
 def readfile(fname: Path) -> bytes:
@@ -46,11 +48,16 @@ def pull(listen: Annotated[
             bool,
             typer.Option("--quiet", "-q", help="Quiet. Don't output to stderr."),
         ] = False,
+        verbose: int = typer.Option(0, "--verbose", "-v", count=True),
     ) -> None:
     """
     Pull data from an open zmq stream, printing as
     a tarfile format to stdout.
     """
+    if verbose == 1:
+        logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+    elif verbose > 1:
+        logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
     assert (dial is None) != (listen is None), "Use either dial or listen to specify an address."
 
@@ -86,10 +93,15 @@ def push(names: Annotated[
             int,
             typer.Option("--ndial", "-n", help="Dial-out to address if >0."),
         ] = 0,
+        verbose: int = typer.Option(0, "--verbose", "-v", count=True),
     ) -> None:
     """ Push a list of files to an zmq stream.
     Used to replay a data transmission.
     """
+    if verbose == 1:
+        logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+    elif verbose > 1:
+        logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
     
     messages = names >> stream.map(readfile) \
                      >> display_sz \
@@ -150,12 +162,17 @@ def get(config: Annotated[
         ndial: Annotated[
             int,
             typer.Option(help="Number of parallel PULL connections."),
-        ] = 16
+        ] = 16,
+        verbose: int = typer.Option(0, "--verbose", "-v", count=True),
     ) -> None:
     """
     Request a data stream from LCLStreamer-API
     and write the contents as a tarfile to stdout.
     """
+    if verbose == 1:
+        logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+    elif verbose > 1:
+        logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
     if config.suffix == ".yml" or config.suffix == ".yaml":
         cfg = yaml.safe_load( config.read_text() )

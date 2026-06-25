@@ -109,18 +109,22 @@ def puller(addr: str, ndial: int) -> Iterator[bytes]:
             if monitor_socket in socks:
                 event = get_monitor_event(monitor_socket)
                 if event['event'] == zmq.EVENT_CONNECTED:
-                    _logger.info("\nSource connected.")
+                    _logger.info("Source connected.")
                     connections += 1
                 if event['event'] == zmq.EVENT_DISCONNECTED:
-                    _logger.info("\nSource disconnected. Shutting down...")
+                    _logger.info("Source disconnected.")
                     disconnections += 1
-                    if connections > 0 and connections == disconnections \
-                                and ndial == 0:
-                        socket.unbind(addr)
+                    # for some reason, EVENT_CONNECTED didn't fire
+                    # with bind/listen sequence!
+                    connections = max(connections, disconnections)
+                    if connections > 0 and connections == disconnections:
+                        if ndial == 0:
+                            socket.unbind(addr)
+                        _logger.info("Shutting down...")
 
             if len(socks) == 0:
                 if connections == 0:
-                    _logger.debug("Pull: waiting for connection")
+                    _logger.debug("Pull: waiting for connection %d %d", connections, disconnections)
                 elif connections > disconnections:
                     _logger.debug("Pull: slow input")
                 else:
