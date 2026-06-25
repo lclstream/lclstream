@@ -14,6 +14,7 @@ import stream
 import typer
 import yaml
 from certified import Certified
+import aiohttp
 
 from .zmqsock import puller, pusher
 from .stream_utils import clock
@@ -163,6 +164,10 @@ def get(config: Annotated[
             int,
             typer.Option(help="Number of parallel PULL connections."),
         ] = 16,
+        mtls: Annotated[
+            bool,
+            typer.Option(help="Authenticate via certified mTLS."),
+        ] = False,
         verbose: int = typer.Option(0, "--verbose", "-v", count=True),
     ) -> None:
     """
@@ -181,7 +186,10 @@ def get(config: Annotated[
     #print(json.dumps(cfg, indent=2))
 
     # ask lclstream-api politely for data
-    cert = Certified()
+    if mtls:
+        cert = Certified()
+    else:
+        cert = aiohttp
     headers = { "user-agent": f"lclstream/{__version__}",
                 "Accept": "application/json" }
 
