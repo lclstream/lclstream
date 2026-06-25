@@ -57,7 +57,7 @@ def pull(listen: Annotated[
     """
     if verbose == 1:
         logging.basicConfig(stream=sys.stderr, level=logging.INFO)
-    elif verbose > 1:
+    elif verbose != 0:
         logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
     assert (dial is None) != (listen is None), "Use either dial or listen to specify an address."
@@ -101,7 +101,7 @@ def push(names: Annotated[
     """
     if verbose == 1:
         logging.basicConfig(stream=sys.stderr, level=logging.INFO)
-    elif verbose > 1:
+    elif verbose != 0:
         logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
     
     messages = names >> stream.map(readfile) \
@@ -113,9 +113,7 @@ def push(names: Annotated[
     # {'count': 0, 'size': 0, 'wait': 0, 'time': time.time()}
     if final['wait'] == 0: # prevent divide by zero exception [sic]
         final['wait'] = -1
-    print(f"Sent {final['count']} messages in {final['wait']} seconds: {final['size']/final['wait']/1024**2} MB/sec.",
-          file=sys.stderr
-    )
+    logger.info(f"Sent {final['count']} messages in {final['wait']} seconds: {final['size']/final['wait']/1024**2} MB/sec.")
 
 
 @stream.stream
@@ -135,7 +133,7 @@ def display_sz(inp: Iterator[bytes]) -> Iterator[bytes]:
         items['wait'] += t1-t0
         items['size'] += sz
         if i % 10 == 9:
-            print(f"At {items['count']}, {items['wait']} seconds: {items['size']/items['wait']/1024**2} MB/sec.", file=sys.stderr)
+            logger.info(f"At {items['count']}, {items['wait']} seconds: {items['size']/items['wait']/1024**2} MB/sec.")
         yield x
         t0 = time.time()
 
@@ -176,14 +174,14 @@ def get(config: Annotated[
     """
     if verbose == 1:
         logging.basicConfig(stream=sys.stderr, level=logging.INFO)
-    elif verbose > 1:
+    elif verbose != 0:
         logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
     if config.suffix == ".yml" or config.suffix == ".yaml":
         cfg = yaml.safe_load( config.read_text() )
     else:
         cfg = json.loads( config.read_text() )
-    #print(json.dumps(cfg, indent=2))
+    logger.debug("Requesting lclstreamer: %s", json.dumps(cfg, indent=2))
 
     # ask lclstream-api politely for data
     if mtls:
@@ -215,10 +213,9 @@ def get(config: Annotated[
     url: str = ans.get("url", "")
     tid: str = ans.get("id", "")
     if status//100 != 2:
-        print("Unable to download stream.\n"
-              f"{status}: {ans}", file=sys.stderr)
+        logger.error("Unable to download stream.\n  %d: %s", status, ans)
         sys.exit(1)
-    print("Received " + json.dumps(ans, indent=2), file=sys.stderr)
+    logger.info("Received %s", json.dumps(ans, indent=2))
 
     def kill_transfer(sig, frame):
         nonlocal tid
@@ -227,7 +224,7 @@ def get(config: Annotated[
         sys.exit(1)
 
     if url == "":
-        print("No URL in response.", file=sys.stderr)
+        logger.error("No URL in response.")
         kill_transfer(None, None)
 
     signal.signal(signal.SIGINT, kill_transfer)
