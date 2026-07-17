@@ -4,8 +4,8 @@ import time
 from typing import Annotated, Optional, List, Tuple, Dict, Any
 from collections.abc import Iterator
 from pathlib import Path
-import asyncio
 import json
+import os
 import sys
 import signal
 import logging
@@ -13,8 +13,7 @@ import logging
 import stream
 import typer
 import yaml
-from certified import Certified
-import aiohttp
+import httpx
 
 from .zmqsock import puller, pusher
 from .stream_utils import clock
@@ -156,22 +155,28 @@ def get(config: Annotated[
         ],
         server: Annotated[
             str,
-            typer.Option(help="API server name (Certified URL format)."),
+            typer.Option(help="API server URL."),
         ] = "https://sdfdtn003.slac.stanford.edu:4433",
         ndial: Annotated[
             int,
             typer.Option(help="Number of parallel PULL connections."),
         ] = 16,
-        mtls: Annotated[
-            bool,
-            typer.Option(help="Authenticate via certified mTLS."),
-        ] = False,
         verbose: int = typer.Option(0, "--verbose", "-v", count=True),
     ) -> None:
     """
     Request a data stream from LCLStreamer-API
     and write the contents as a tarfile to stdout.
     """
+    token = os.getenv("S3DF_TOKEN", "")
+    if token == "":
+        try:
+            with open(os.path.join(os.environ["HOME"], ".s3df-access-token"), encoding="utf-8") as f:
+                token = f.read().strip()
+        except Exception:
+            pass
+    if token == "":
+        raise KeyError("S3DF_TOKEN or $HOME/.s3df-access-token is required.")
+
     if verbose == 1:
         logging.basicConfig(stream=sys.stderr, level=logging.INFO)
     elif verbose != 0:
@@ -183,31 +188,30 @@ def get(config: Annotated[
         cfg = json.loads( config.read_text() )
     logger.debug("Requesting lclstreamer: %s", json.dumps(cfg, indent=2))
 
-    # ask lclstream-api politely for data
-    if mtls:
-        cert = Certified()
-    else:
-        cert = aiohttp
     headers = { "user-agent": f"lclstream/{__version__}",
-                "Accept": "application/json" }
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+              }
 
-    async def request_data() -> Tuple[bool, Dict[str,Any]]:
-        async with cert.ClientSession(
+    def request_data() -> Tuple[bool, Dict[str,Any]]:
+        with httpx.Client(
+                        base_url=server,
+                        headers=headers,
+                        verify=False
+                    ) as cli:
+            resp = cli.post("/v1/transfers", json=cfg)
+            ans = resp.json()
+        return resp.status_code, ans
+
+    def cancel_transfer(tid: str) -> None:
+        with httpx.Client(
                         base_url = server,
                         headers = headers,
+                        verify=False
                     ) as cli:
-            resp = await cli.post("/v1/transfers", json=cfg)
-            ans = await resp.json()
-        return resp.status, ans
+            cli.delete(f"/v1/transfers/{tid}")
 
-    async def cancel_transfer(tid: str) -> None:
-        async with cert.ClientSession(
-                        base_url = server,
-                        headers = headers,
-                    ) as cli:
-            await cli.delete(f"/v1/transfers/{tid}")
-
-    status, ans = asyncio.run(request_data())
+    status, ans = request_data()
 
     # parse response from server
     url: str = ans.get("url", "")
@@ -220,7 +224,7 @@ def get(config: Annotated[
     def kill_transfer(sig, frame):
         nonlocal tid
         if tid != "":
-            asyncio.run(cancel_transfer(tid))
+            cancel_transfer(tid)
         sys.exit(1)
 
     if url == "":
