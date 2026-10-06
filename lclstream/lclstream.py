@@ -71,6 +71,7 @@ def pull(listen: Annotated[
         addr = listen
         ndial = 0
     else:
+        assert dial is not None
         addr = dial
         if ndial is None:
             ndial = 1
@@ -190,7 +191,7 @@ def get(config: Annotated[
     if mtls:
         cert = Certified()
     else:
-        cert = aiohttp
+        cert = aiohttp # type: ignore[assignment]
     headers = { "user-agent": f"lclstream/{__version__}",
                 "Accept": "application/json" }
 

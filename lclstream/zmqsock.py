@@ -61,7 +61,7 @@ def _drain_monitor(mon) -> list[dict]:
             events.append(zmq_monitor.parse_monitor_message(msg))
         except zmq.Again:
             break
-    return events
+    return events # type: ignore[return-value]
 
 
 @stream.source
