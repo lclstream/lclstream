@@ -1,7 +1,6 @@
 from typing import TypeVar, Optional, Union
 from collections.abc import Iterator, Callable
 import io
-import time
 import logging
 _logger = logging.getLogger(__name__)
 
@@ -9,7 +8,7 @@ import stream
 import h5py # type: ignore[import-untyped]
 from zmq import ZMQError
 import zmq
-import zmq.utils.monitor as monitor
+import zmq.utils.monitor as zmq_monitor
 
 T = TypeVar('T')
 def load_h5(buf: bytes, reader: Callable[[h5py.File],T]) -> Optional[T]:
@@ -32,14 +31,9 @@ def pusher(gen: Iterator[bytes], addr: str, ndial: int
           ) -> Iterator[int]:
     # transform messages sent into sizes sent
     assert ndial >= 0
-    
+
     ctxt = zmq.Context.instance()
     with ctxt.socket(zmq.PUSH) as socket:
-        # Set linger to 0 so socket closes immediately without waiting
-        #socket.setsockopt(zmq.LINGER, 0)
-        # Queue 5 messages
-        #socket.setsockopt(zmq.SNDHWM, 5)
-
         # Don't queue messages until a receiver connects.
         socket.setsockopt(zmq.IMMEDIATE, 1)
 
@@ -48,8 +42,6 @@ def pusher(gen: Iterator[bytes], addr: str, ndial: int
                 socket.bind(addr)
                 _logger.info("Listening on %s.", addr)
             else:
-                #for dial in range(ndial):
-                #    socket.dial(addr, block=True)
                 socket.connect(addr)
                 _logger.info("Connected to %s - starting stream.", addr)
         except ZMQError as e:
@@ -59,79 +51,133 @@ def pusher(gen: Iterator[bytes], addr: str, ndial: int
             socket.send(msg)
             yield len(msg)
 
-def get_monitor_event(monitor_socket):
-    """Helper to receive and parse a monitor event."""
-    msg = monitor_socket.recv_multipart()
-    event = monitor.parse_monitor_message(msg)
-    return event
+
+def _drain_monitor(mon) -> list[dict]:
+    """Non-blocking drain of all pending monitor events from a PAIR socket."""
+    events = []
+    while True:
+        try:
+            msg = mon.recv_multipart(flags=zmq.NOBLOCK)
+            events.append(zmq_monitor.parse_monitor_message(msg))
+        except zmq.Again:
+            break
+    return events
+
 
 @stream.source
 def puller(addr: str, ndial: int) -> Iterator[bytes]:
+    """Pull from addr using ndial parallel PULL sockets.
+
+    ndial=0  bind to addr (single socket, listen mode)
+    ndial=1  single connect (no overhead path)
+    ndial=N  N parallel connections — ZMQ's C I/O threads receive on all
+             simultaneously; a single Poller drains whichever sockets are
+             ready, with no Python threads or queues in the way.
+
+    With ndial > 1 the producer's PUSH socket round-robins messages across
+    the N connections, spreading load across N independent TCP streams.
+    Tune ndial to match what iperf3 -P N gives on the link.
+    """
     assert ndial >= 0
 
     ctxt = zmq.Context.instance()
+    n = max(ndial, 1)
+    bind_mode = (ndial == 0)
 
-    with ctxt.socket(zmq.PULL) as socket:
-        socket.monitor("inproc://monitor.pull", zmq.EVENT_DISCONNECTED | zmq.EVENT_CONNECTED)
-        monitor_socket = ctxt.socket(zmq.PAIR)
-        monitor_socket.connect("inproc://monitor.pull")
+    sockets: list = []
+    monitors: list = []
+    poller = zmq.Poller()
 
-        poller = zmq.Poller()
-        poller.register(socket, zmq.POLLIN)
-        poller.register(monitor_socket, zmq.POLLIN)
+    try:
+        for i in range(n):
+            s = ctxt.socket(zmq.PULL)
+            mon_addr = f"inproc://monitor.pull.{id(s)}"
+            s.monitor(mon_addr, zmq.EVENT_DISCONNECTED | zmq.EVENT_CONNECTED)
+            mon = ctxt.socket(zmq.PAIR)
+            mon.connect(mon_addr)
+            poller.register(s, zmq.POLLIN)
+            poller.register(mon, zmq.POLLIN)
+            sockets.append(s)
+            monitors.append(mon)
 
-        try:
-            if ndial == 0:
-                socket.bind(addr)
+        if bind_mode:
+            try:
+                sockets[0].bind(addr)
                 _logger.info("Pull: waiting for connection")
-            else:
-                socket.connect(addr)
-                _logger.info("Connected to %s - starting recv.", addr)
-        except ZMQError as e:
-            _logger.error("Unable to connect to %s - %s", addr, e)
+            except ZMQError as e:
+                _logger.error("Unable to bind to %s - %s", addr, e)
+                return
+        else:
+            for i, s in enumerate(sockets):
+                try:
+                    s.connect(addr)
+                    label = addr if n == 1 else f"{addr} [{i}]"
+                    _logger.info("Connected to %s - starting recv.", label)
+                except ZMQError as e:
+                    _logger.error("Unable to connect to %s - %s", addr, e)
 
-        connections    = 0
-        disconnections = 0
-        active = True
-        while active:
-            socks = dict(poller.poll(1000))
+        # Per-socket connection tracking
+        conn = [0] * n   # EVENT_CONNECTED count
+        disc = [0] * n   # EVENT_DISCONNECTED count
+        done: set[int] = set()
 
-            # Check for actual data
-            if socket in socks:
-                #yield socket.recv()
-                while True:
-                    try:
-                        yield socket.recv(flags=zmq.NOBLOCK)
-                    except zmq.Again:
-                        break
-            
-            # Check for socket events (Disconnects)
-            if monitor_socket in socks:
-                event = get_monitor_event(monitor_socket)
-                if event['event'] == zmq.EVENT_CONNECTED:
-                    _logger.info("Source connected.")
-                    connections += 1
-                if event['event'] == zmq.EVENT_DISCONNECTED:
-                    _logger.info("Source disconnected.")
-                    disconnections += 1
-                    # for some reason, EVENT_CONNECTED didn't fire
-                    # with bind/listen sequence!
-                    connections = max(connections, disconnections)
-                    if connections > 0 and connections == disconnections:
-                        if ndial == 0:
-                            socket.unbind(addr)
-                        _logger.info("Shutting down...")
+        sock_to_idx  = {id(s): i for i, s in enumerate(sockets)}
+        mon_to_idx   = {id(m): i for i, m in enumerate(monitors)}
 
-            if len(socks) == 0:
-                if connections == 0:
-                    _logger.debug("Pull: waiting for connection %d %d", connections, disconnections)
-                elif connections > disconnections:
-                    _logger.debug("Pull: slow input")
-                else:
-                    events = socket.getsockopt(zmq.EVENTS)
-                    #print(f"{events} events")
-                    active = events > 0
+        while len(done) < n:
+            ready = dict(poller.poll(1000))
 
-        # Cleanup
-        socket.disable_monitor()
-        monitor_socket.close()
+            # Drain data from all ready data sockets
+            for s in sockets:
+                if s in ready:
+                    while True:
+                        try:
+                            yield s.recv(flags=zmq.NOBLOCK)
+                        except zmq.Again:
+                            break
+
+            # Process monitor events (drain each ready monitor fully)
+            for mon in monitors:
+                if mon not in ready:
+                    continue
+                i = mon_to_idx[id(mon)]
+                for event in _drain_monitor(mon):
+                    ev = event['event']
+                    if ev == zmq.EVENT_CONNECTED:
+                        conn[i] += 1
+                        label = addr if n == 1 else f"{addr} [{i}]"
+                        _logger.info("Source connected. (%s)", label)
+                    elif ev == zmq.EVENT_DISCONNECTED:
+                        disc[i] += 1
+                        conn[i] = max(conn[i], disc[i])
+                        label = addr if n == 1 else f"{addr} [{i}]"
+                        _logger.info("Source disconnected. (%s)", label)
+                        if conn[i] > 0 and conn[i] == disc[i]:
+                            if bind_mode:
+                                sockets[i].unbind(addr)
+                            else:
+                                sockets[i].disconnect(addr)
+                            _logger.info("Shutting down... (%s)", label)
+
+            # On 1-second timeout, check which sockets can be retired
+            if len(ready) == 0:
+                for i in range(n):
+                    if i in done:
+                        continue
+                    if conn[i] == 0:
+                        _logger.debug("Pull [%d]: waiting for connection", i)
+                    elif conn[i] > disc[i]:
+                        _logger.debug("Pull [%d]: slow input", i)
+                    else:
+                        # Disconnected — retire once receive buffer is empty
+                        if sockets[i].getsockopt(zmq.EVENTS) == 0:
+                            done.add(i)
+
+    finally:
+        for i, s in enumerate(sockets):
+            try:
+                s.disable_monitor()
+            except Exception:
+                pass
+            monitors[i].close()
+            s.close()

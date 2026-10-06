@@ -39,7 +39,7 @@ def pull(listen: Annotated[
         ] = None,
         ndial: Annotated[
             Optional[int],
-            typer.Option("--ndial", "-n", help="Number of simultaneous connections (dial only)"),
+            typer.Option("--ndial", "-n", help="Number of parallel connections to open (dial only)."),
         ] = None,
         names: Annotated[
             str,
@@ -54,23 +54,26 @@ def pull(listen: Annotated[
     """
     Pull data from an open zmq stream, printing as
     a tarfile format to stdout.
+
+    Use --ndial to open multiple parallel connections and saturate the link:
+
+      lclstream pull -d tcp://host:42001 -n 8
     """
     if verbose == 1:
         logging.basicConfig(stream=sys.stderr, level=logging.INFO)
     elif verbose != 0:
         logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
-    assert (dial is None) != (listen is None), "Use either dial or listen to specify an address."
+    assert (dial is None) != (listen is None), "Use either --dial or --listen to specify an address."
 
-    if listen is None:
-        addr = dial
-    else:
+    if listen is not None:
         assert ndial is None or ndial == 0, "Invalid ndial for listening mode"
-        ndial = 0
         addr = listen
-
-    if ndial is None: # wasn't set above, must be dialing
-        ndial = 1
+        ndial = 0
+    else:
+        addr = dial
+        if ndial is None:
+            ndial = 1
 
     inp = puller(addr, ndial)
     if not quiet: # add a display?
