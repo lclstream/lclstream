@@ -43,7 +43,7 @@ or
 
 Install/test with uv
 
-    uv sybc
+    uv sync
     uv run --extra dev mypy lclstream
     uv run --extra dev pytest --cov lclstream tests
     uv run lclstream <...>
